@@ -34,7 +34,17 @@ export default async function handler(req, res) {
     if (userText === "/help") {
       await sendTelegramMessage(
         chatId,
-        "ℹ️ Bas mujhe normal message bhejo, main AI se jawab laake dunga.\n\nCommands:\n/start - bot shuru karo\n/help - help dekho"
+        "ℹ️ Bas mujhe normal message bhejo, main AI se jawab laake dunga.\n\nCommands:\n/start - bot shuru karo\n/help - help dekho\n/model - abhi konsa AI model use ho raha hai dekho"
+      );
+      return res.status(200).json({ ok: true });
+    }
+
+    // /model command ya "kaunsa model" jaisa natural sawal puchne par model ka naam bata do
+    if (userText === "/model" || isAskingAboutModel(userText)) {
+      const modelName = process.env.FREEMODEL_MODEL || "gpt-3.5-turbo";
+      await sendTelegramMessage(
+        chatId,
+        `🧠 Abhi main *${modelName}* model use kar raha hoon (via freemodel.dev).`
       );
       return res.status(200).json({ ok: true });
     }
@@ -54,6 +64,20 @@ export default async function handler(req, res) {
     // Telegram ko hamesha 200 bhejo, warna wo retry karta rahega
     return res.status(200).json({ ok: true });
   }
+}
+
+// User "kaunsa model use ho raha hai" type ka sawal pooch raha hai kya, ye detect karta hai
+function isAskingAboutModel(text) {
+  const t = text.toLowerCase();
+  const hasModelWord = t.includes("model");
+  const hasAskingWord =
+    t.includes("kaun") ||
+    t.includes("kon") ||
+    t.includes("kya") ||
+    t.includes("which") ||
+    t.includes("what") ||
+    t.includes("naam");
+  return hasModelWord && hasAskingWord;
 }
 
 // freemodel.dev API ko call karta hai

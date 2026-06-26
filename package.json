@@ -8,7 +8,7 @@
     "set-webhook": "node scripts/set-webhook.js"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "20.x"
   },
   "license": "MIT"
 }
