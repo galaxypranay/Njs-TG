@@ -34,7 +34,7 @@ export default async function handler(req, res) {
     if (userText === "/help") {
       await sendTelegramMessage(
         chatId,
-        "ℹ️ Bas mujhe normal message bhejo, main AI se jawab laake dunga.\n\nCommands:\n/start - bot shuru karo\n/help - help dekho\n/model - abhi konsa AI model use ho raha hai dekho"
+        "ℹ️ Bas mujhe normal message bhejo, main AI se jawab laake dunga.\n\nCommands:\n/start - bot shuru karo\n/help - help dekho\n/model - abhi konsa AI model use ho raha hai dekho\n/clear - purani yaad (memory) bhula do"
       );
       return res.status(200).json({ ok: true });
     }
@@ -49,11 +49,29 @@ export default async function handler(req, res) {
       return res.status(200).json({ ok: true });
     }
 
+    // /clear command - purani yaad (memory) delete karne ke liye
+    if (userText === "/clear") {
+      await saveHistory(chatId, []);
+      await sendTelegramMessage(chatId, "🧹 Theek hai bhai, sab bhula diya. Naye se shuru karte hain.");
+      return res.status(200).json({ ok: true });
+    }
+
     // "Typing..." action bhejo taaki user ko pata chale bot kaam kar raha hai
     sendTypingAction(chatId).catch(() => {});
 
-    // AI se response lo
-    const aiReply = await getAIResponse(userText);
+    // Purani conversation history uthao (memory ke liye)
+    const history = await getHistory(chatId);
+
+    // AI se response lo (history ke saath)
+    const aiReply = await getAIResponse(userText, history);
+
+    // Naya exchange history me save karo (last N messages tak limit rakhte hain)
+    const updatedHistory = [
+      ...history,
+      { role: "user", content: userText },
+      { role: "assistant", content: aiReply },
+    ];
+    await saveHistory(chatId, updatedHistory);
 
     // Telegram message ki limit ~4096 chars hai, isliye split kar dete hain
     await sendLongMessage(chatId, aiReply);
@@ -80,8 +98,24 @@ function isAskingAboutModel(text) {
   return hasModelWord && hasAskingWord;
 }
 
-// freemodel.dev API ko call karta hai
-async function getAIResponse(userText) {
+// Bot ki personality - savage/taunting dost, lekin real hate speech/slurs ke bina
+const SYSTEM_PROMPT = `Tum ek savage, masti-khor Telegram dost ho - jaise koi local tapori dost jo pyaar se gaali deta hai.
+
+Tumhara style:
+- Hinglish me baat karo, casual aur funny tone me
+- Halka-fulka taana maaro, roast karo, mazaak udao (jaise "saale", "pagal hai kya tu", "bhai dimaag ghar pe chhod aaya kya", "ullu ke pattha", "nalla")
+- Faltu/random bakar bhi kar sakte ho, seedha-saadha boring jawab mat do
+- Phir bhi asal me helpful raho - jo sawal pucha hai uska sahi jawab bhi do, bas usko masti wale tone me wrap karo
+- User ki pichli baatein yaad rakho aur unka reference do jaise ek dost karta hai
+
+STRICT LIMITS (kabhi cross nahi karna):
+- Kisi ki caste, religion, gender, sexuality, disability, ya kisi group ko target karke gaali/slur kabhi mat do
+- Sexual abuse, threats, ya real harassment wali language mat use karo
+- Kisi real (asli) insaan ko, jo conversation me nahi hai, abuse mat karo
+- Agar user genuinely upset/sad/serious problem share kare, to mazaak chhod ke seedha supportive ban jao`;
+
+// freemodel.dev API ko call karta hai (conversation history ke saath)
+async function getAIResponse(userText, history = []) {
   try {
     const response = await fetch(FREEMODEL_API_URL, {
       method: "POST",
@@ -92,14 +126,11 @@ async function getAIResponse(userText) {
       body: JSON.stringify({
         model: process.env.FREEMODEL_MODEL || "gpt-3.5-turbo",
         messages: [
-          {
-            role: "system",
-            content:
-              "Tum ek helpful Telegram assistant ho. Hindi/Hinglish me clear aur short jawab do.",
-          },
+          { role: "system", content: SYSTEM_PROMPT },
+          ...history,
           { role: "user", content: userText },
         ],
-        temperature: 0.7,
+        temperature: 0.9,
       }),
     });
 
@@ -116,6 +147,49 @@ async function getAIResponse(userText) {
   } catch (err) {
     console.error("getAIResponse error:", err);
     return "⚠️ Kuch technical error aaya hai. Baad me try karo.";
+  }
+}
+
+// Upstash Redis se chat ki purani history uthata hai
+async function getHistory(chatId) {
+  try {
+    const baseUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (!baseUrl || !token) return []; // memory env set nahi hai to khaali history
+
+    const res = await fetch(`${baseUrl}/get/chat_history:${chatId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const data = await res.json();
+    if (!data?.result) return [];
+
+    return JSON.parse(data.result);
+  } catch (err) {
+    console.error("getHistory error:", err);
+    return [];
+  }
+}
+
+// Upstash Redis me chat ki history save karta hai (last 20 messages tak)
+async function saveHistory(chatId, history) {
+  try {
+    const baseUrl = process.env.UPSTASH_REDIS_REST_URL;
+    const token = process.env.UPSTASH_REDIS_REST_TOKEN;
+    if (!baseUrl || !token) return; // memory env set nahi hai to skip
+
+    const MAX_MESSAGES = 20; // ~10 exchanges yaad rakhega
+    const trimmed = history.slice(-MAX_MESSAGES);
+
+    await fetch(`${baseUrl}/set/chat_history:${chatId}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(JSON.stringify(trimmed)),
+    });
+  } catch (err) {
+    console.error("saveHistory error:", err);
   }
 }
 
